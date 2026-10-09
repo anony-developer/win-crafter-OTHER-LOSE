@@ -454,6 +454,7 @@
       window.toastWarning=(m,t)=>showToast(m,'warning',t);
       window.toastInfo=(m,t)=>showToast(m,'info',t);
       window.toastLoss=(m,t)=>showToast(m,'loss',t);
+      window.toastWin=(m,t)=>showToast(m,'success',t||'You won!');
 
       // Approval time ranges
       const DEPOSIT_APPROVAL_MIN_MS = 1 * 60 * 1000;
@@ -479,9 +480,55 @@
 
       function getUsers(){return JSON.parse(localStorage.getItem(STORAGE_PREFIX+'users')||'[]')}
       function saveUsers(u){localStorage.setItem(STORAGE_PREFIX+'users',JSON.stringify(u))}
-      function getCurrentUser(){const p=localStorage.getItem(STORAGE_PREFIX+'currentUser');if(!p)return null;return getUsers().find(u=>u.phone===p)||null}
-      function setCurrentUser(p){localStorage.setItem(STORAGE_PREFIX+'currentUser',p)}
-      function clearCurrentUser(){localStorage.removeItem(STORAGE_PREFIX+'currentUser')}
+
+      // ---- PERSISTENT SESSION HELPERS ----
+      function saveSession(phone) {
+        try {
+          localStorage.setItem(STORAGE_PREFIX + 'currentUser', phone);
+          sessionStorage.setItem(STORAGE_PREFIX + 'currentUser', phone);
+        } catch (e) {}
+      }
+
+      function restoreSession() {
+        try {
+          let phone = localStorage.getItem(STORAGE_PREFIX + 'currentUser');
+          if (!phone) {
+            phone = sessionStorage.getItem(STORAGE_PREFIX + 'currentUser');
+            if (phone) localStorage.setItem(STORAGE_PREFIX + 'currentUser', phone);
+          }
+          if (!phone) return null;
+          const users = getUsers();
+          const user = users.find(u => u.phone === phone);
+          if (!user) {
+            localStorage.removeItem(STORAGE_PREFIX + 'currentUser');
+            sessionStorage.removeItem(STORAGE_PREFIX + 'currentUser');
+            return null;
+          }
+          return user;
+        } catch (e) {
+          return null;
+        }
+      }
+
+      function clearSession() {
+        localStorage.removeItem(STORAGE_PREFIX + 'currentUser');
+        sessionStorage.removeItem(STORAGE_PREFIX + 'currentUser');
+      }
+
+      function getCurrentUser() {
+        const phone = localStorage.getItem(STORAGE_PREFIX + 'currentUser') ||
+                      sessionStorage.getItem(STORAGE_PREFIX + 'currentUser');
+        if (!phone) return null;
+        const user = getUsers().find(u => u.phone === phone);
+        if (!user) {
+          clearSession();
+          return null;
+        }
+        return user;
+      }
+      function setCurrentUser(p) { saveSession(p); }
+      function clearCurrentUser() { clearSession(); }
+
       function getUserHistory(p){return JSON.parse(localStorage.getItem(STORAGE_PREFIX+'history_'+p)||'[]')}
       function saveUserHistory(p,h){localStorage.setItem(STORAGE_PREFIX+'history_'+p,JSON.stringify(h))}
       function addHistory(p,e){
@@ -778,8 +825,8 @@
       });
 
       // ============================================================
-      // AVIATOR GAME — GUARANTEED LOSS
-      // Auto crash: 1.00 – 2.10 | User bet: crash 0.10–0.30 BELOW target (LOSS)
+      // AVIATOR GAME — FAIR MULTIPLIER (USER CAN WIN OR LOSE)
+      // Auto crash: 1.00 – 2.10 | Win if crash >= target
       // 10s betting window | Last 20 multipliers saved
       // ============================================================
       const aviatorMultiplierEl=document.getElementById('aviatorMultiplier');
@@ -852,15 +899,9 @@
         shakeCleanupTimeout=setTimeout(()=>{aviatorDisplay.classList.remove('screen-shake');shakeCleanupTimeout=null},800);
       }
 
-      function generateAutoCrashMultiplier(){return Math.round((1+Math.random()*1.10)*100)/100}
-      // CHANGED: now generates a crash 0.10–0.30 BELOW the user's target (guaranteed loss)
-      function generateLosingCrashMultiplier(userTarget){
-        const deduction = 0.10 + Math.random() * 0.20; // 0.10 to 0.30
-        let crash = Math.round((userTarget - deduction) * 100) / 100;
-        if(crash < 1.01) crash = 1.01;
-        if(crash >= userTarget) crash = Math.round((userTarget - 0.10) * 100) / 100;
-        if(crash < 1.01) crash = 1.01;
-        return Math.round(crash * 100) / 100;
+      // Fair crash multiplier: 1.00 – 2.10 (can be above or below target)
+      function generateFairCrashMultiplier() {
+        return Math.round((1 + Math.random() * 1.10) * 100) / 100;
       }
 
       function updateCountdownBadge(seconds){
@@ -905,9 +946,9 @@
         if(gameInterval){clearInterval(gameInterval);gameInterval=null}
         roundActive=true;
         startBtn.disabled=true;
-        let crashMultiplier;
-        if(pendingBet){crashMultiplier=generateLosingCrashMultiplier(pendingBet.target);pendingBet.forcedCrash=crashMultiplier}
-        else{crashMultiplier=generateAutoCrashMultiplier()}
+        // Fair multiplier — user can win or lose
+        let crashMultiplier = generateFairCrashMultiplier();
+        if(pendingBet) pendingBet.forcedCrash = crashMultiplier;
         roundCrashMultiplier=crashMultiplier;
         const peakMultiplier=crashMultiplier;
         const totalSteps=Math.max(40,Math.floor(peakMultiplier*40));
@@ -925,17 +966,62 @@
             clearInterval(gameInterval);gameInterval=null;
             const finalCrash=roundCrashMultiplier;
             aviatorMultiplierEl.textContent=finalCrash.toFixed(2)+'x';
-            aviatorMultiplierEl.className='aviator-multiplier loss';
-            aviatorPlane.className='aviator-plane crashed';
-            playCrashFX();
-            addMultiplierToHistory(finalCrash);
+
             if(pendingBet && currentUser){
               const { amount, target, phone, betId } = pendingBet;
-              // CHANGED: user always loses — no payout, just mark bet as lost
-              updateHistoryEntry(phone,h=>h.id===betId,{status:'finished',description:`Aviator LOST at ${target.toFixed(2)}x (crashed ${finalCrash.toFixed(2)}x)`,detail:`Bet: $${amount.toFixed(2)} • No payout`,win:false,amount:amount});
-              pendingBet=null;renderHistory();
+              const won = finalCrash >= target;
+
+              if (won) {
+                // WIN
+                const payout = amount * target;
+                aviatorMultiplierEl.className = 'aviator-multiplier win';
+                aviatorPlane.className = 'aviator-plane';
+                const users = getUsers();
+                const idx = users.findIndex(u => u.phone === phone);
+                if (idx !== -1) {
+                  users[idx].balance = (users[idx].balance || 0) + payout;
+                  saveUsers(users);
+                  currentUser = users[idx];
+                  updateBalanceUI();
+                }
+                updateHistoryEntry(phone, h => h.id === betId, {
+                  status: 'finished',
+                  description: `Aviator WON at ${target.toFixed(2)}x (crashed ${finalCrash.toFixed(2)}x)`,
+                  detail: `Bet: $${amount.toFixed(2)} • Payout: $${payout.toFixed(2)}`,
+                  win: true,
+                  amount: payout
+                });
+                // GREEN WIN TOAST
+                toastWin(`You won $${payout.toFixed(2)} at ${target.toFixed(2)}x!`, '🎉 Win!');
+                gameMsg.innerHTML = `<i class="fas fa-trophy" style="color:#34a853;"></i> WON $${payout.toFixed(2)} at ${target.toFixed(2)}x!`;
+              } else {
+                // LOSS
+                aviatorMultiplierEl.className = 'aviator-multiplier loss';
+                aviatorPlane.className = 'aviator-plane crashed';
+                playCrashFX();
+                updateHistoryEntry(phone, h => h.id === betId, {
+                  status: 'finished',
+                  description: `Aviator LOST at ${target.toFixed(2)}x (crashed ${finalCrash.toFixed(2)}x)`,
+                  detail: `Bet: $${amount.toFixed(2)} • No payout`,
+                  win: false,
+                  amount: amount
+                });
+                toastLoss(`Bet lost at ${finalCrash.toFixed(2)}x (target ${target.toFixed(2)}x)`, 'Better luck next time');
+                gameMsg.innerHTML = `💥 CRASHED at ${finalCrash.toFixed(2)}x — you lost $${amount.toFixed(2)}`;
+              }
+
+              pendingBet = null;
+              renderHistory();
+            } else {
+              // No bet — just show crash
+              aviatorMultiplierEl.className = 'aviator-multiplier loss';
+              aviatorPlane.className = 'aviator-plane crashed';
+              playCrashFX();
+              gameMsg.textContent = `💥 CRASHED at ${finalCrash.toFixed(2)}x`;
             }
-            gameMsg.textContent=`💥 CRASHED at ${finalCrash.toFixed(2)}x`;
+
+            addMultiplierToHistory(finalCrash);
+
             setTimeout(()=>{
               if(!autoPlayActive){roundActive=false;startBtn.disabled=false;return}
               startBettingWindow();
@@ -998,7 +1084,8 @@
         addHistory(currentUser.phone,{id:betId,type:'bet',status:'pending',description:`Aviator bet — Target ${targetMultiplier.toFixed(2)}x`,detail:`Amount: $${betAmount.toFixed(2)} • Waiting for flight…`,amount:betAmount,win:false,time:createdAt});
         renderHistory();
         pendingBet={amount:betAmount,target:targetMultiplier,phone:currentUser.phone,betId:betId};
-        toastSuccess(`Bet placed: $${betAmount.toFixed(2)} at ${targetMultiplier.toFixed(2)}x`,'Bet accepted');
+        // YELLOW TOAST for bet placed
+        toastWarning(`Bet placed: $${betAmount.toFixed(2)} at ${targetMultiplier.toFixed(2)}x`, 'Bet accepted');
         startBtn.disabled=true;
         gameMsg.innerHTML=`<i class="fas fa-check-circle" style="color:#34a853;"></i> Bet placed! Target: ${targetMultiplier.toFixed(2)}x — waiting for flight…`;
       });
@@ -1047,18 +1134,40 @@
 
       processPendingRequests();
 
+      // ---- EARLY SESSION RESTORE ----
+      (function earlyRestore() {
+        const user = restoreSession();
+        if (user) {
+          currentUser = user;
+          authSection.classList.add('hidden');
+          dashboardSection.classList.remove('hidden');
+          document.getElementById('logoutBtn').classList.remove('hidden');
+          document.getElementById('welcomeUsername').textContent = `Welcome, ${user.fullname}`;
+          updateBalanceUI();
+          renderHistory();
+          processPendingRequests();
+          startAutoPlay();
+        }
+      })();
+
       window.showDashboard=showDashboard;
       window.stopAutoPlay=stopAutoPlay;
 
       window.addEventListener('storage',e=>{
         if(e.key===STORAGE_PREFIX+'currentUser'||e.key===STORAGE_PREFIX+'users'||e.key===STORAGE_PREFIX+'pending'||e.key.startsWith(STORAGE_PREFIX+'history_')){
-          if(!getCurrentUser()){
+          const user = restoreSession();
+          if(!user){
             authSection.classList.remove('hidden');dashboardSection.classList.add('hidden');document.getElementById('logoutBtn').classList.add('hidden');stopAutoPlay();
           }else{
-            currentUser=getCurrentUser();updateBalanceUI();renderHistory();document.getElementById('logoutBtn').classList.remove('hidden');processPendingRequests();
+            currentUser=user;updateBalanceUI();renderHistory();document.getElementById('logoutBtn').classList.remove('hidden');processPendingRequests();
             if(!autoPlayActive)startAutoPlay();
           }
         }
+      });
+
+      // ---- SAVE SESSION ON UNLOAD ----
+      window.addEventListener('beforeunload', () => {
+        if (currentUser) saveSession(currentUser.phone);
       });
     })();
   </script>
