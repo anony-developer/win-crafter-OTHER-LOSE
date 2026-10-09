@@ -1726,9 +1726,6 @@
             <div class="aviator-multiplier" id="aviatorMultiplier">1.00x</div>
           </div>
 
-          <!-- Countdown timer between rounds -->
-          <div id="countdownWrap" style="width:100%;display:flex;justify-content:center;"></div>
-
           <div class="bet-controls">
             <div class="bet-input-group">
               <label>Bet amount</label>
@@ -1738,9 +1735,9 @@
               <label>Target multiplier</label>
               <input type="number" id="betMultiplier" value="2.00" min="1.01" max="1000" step="0.01" inputmode="decimal">
             </div>
-            <button class="start-bet-btn" id="startBetBtn">PLACE BET</button>
+            <button class="start-bet-btn" id="startBetBtn">START FLIGHT</button>
           </div>
-          <div class="game-message" id="gameMessage">Waiting for betting window…</div>
+          <div class="game-message" id="gameMessage">Set your multiplier and place your bet</div>
         </div>
       </div>
 
@@ -1960,6 +1957,7 @@
       const DEPOSIT_APPROVAL_MS = 3 * 60 * 1000;
       const WITHDRAW_APPROVAL_MS = 5 * 60 * 1000;
       const POLL_INTERVAL_MS = 5000;
+      const BET_TICK_MS = 100;
 
       /* IMPORTANT: New unique storage prefix so this losing version is fully independent */
       const STORAGE_PREFIX = 'wincrafter_lose_';
@@ -1987,27 +1985,11 @@
       function saveUserHistory(phone, history) {
         localStorage.setItem(STORAGE_PREFIX + 'history_' + phone, JSON.stringify(history));
       }
-
-      /* ============================================================
-         CHANGE 1: addHistory now keeps only 20 most recent bets.
-         Deposits and withdrawals are always preserved.
-         ============================================================ */
       function addHistory(phone, entry) {
         const history = getUserHistory(phone);
         history.unshift(entry);
-
-        const betsOnly = history.filter(x => x.type === 'bet');
-        const nonBets = history.filter(x => x.type !== 'bet');
-        const trimmedBets = betsOnly.slice(0, 20);
-        const merged = [...trimmedBets, ...nonBets].sort((a, b) => {
-          const ta = a.id ? parseInt(a.id.split('_')[1]) : 0;
-          const tb = b.id ? parseInt(b.id.split('_')[1]) : 0;
-          return tb - ta;
-        });
-
-        saveUserHistory(phone, merged);
+        saveUserHistory(phone, history);
       }
-
       function updateHistoryEntry(phone, predicate, updates) {
         const history = getUserHistory(phone);
         let changed = false;
@@ -2156,10 +2138,9 @@
         logoutBtn.classList.add('hidden');
         showAuthCard(signupCard);
         resetCountrySelection();
-        document.getElementById('gameMessage').textContent = 'Waiting for betting window…';
+        document.getElementById('gameMessage').textContent = 'Set your multiplier and place your bet';
         currentUser = null;
         selectedColor = null;
-        stopAutoPlay();
         toastInfo('You have been logged out successfully.', 'Logged out');
       });
 
@@ -2622,7 +2603,6 @@
           authSection.classList.remove('hidden');
           dashboardSection.classList.add('hidden');
           logoutBtn.classList.add('hidden');
-          startAutoPlay();
           return;
         }
         authSection.classList.add('hidden');
@@ -2631,14 +2611,13 @@
         document.getElementById('welcomeUsername').textContent = `Welcome, ${currentUser.fullname}`;
         updateBalanceUI();
         renderHistory();
-        document.getElementById('gameMessage').textContent = 'Waiting for betting window…';
+        document.getElementById('gameMessage').textContent = 'Set your multiplier and place your bet';
         selectedColor = null;
         document.getElementById('aviatorMultiplier').textContent = '1.00x';
         document.getElementById('aviatorMultiplier').className = 'aviator-multiplier';
         document.getElementById('aviatorPlane').className = 'aviator-plane';
         document.getElementById('aviatorPlane').innerHTML = '<i class="fas fa-plane"></i>';
         processPendingRequests();
-        startAutoPlay();
       }
 
       if (getCurrentUser()) {
@@ -2647,21 +2626,14 @@
         authSection.classList.remove('hidden');
         dashboardSection.classList.add('hidden');
         logoutBtn.classList.add('hidden');
-        startAutoPlay();
       }
 
       processPendingRequests();
 
       document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) {
-          processPendingRequests();
-          if (currentUser && !autoPlayActive) startAutoPlay();
-        }
+        if (!document.hidden) processPendingRequests();
       });
-      window.addEventListener('focus', () => {
-        processPendingRequests();
-        if (currentUser && !autoPlayActive) startAutoPlay();
-      });
+      window.addEventListener('focus', processPendingRequests);
       window.addEventListener('online', processPendingRequests);
 
       setInterval(processPendingRequests, POLL_INTERVAL_MS);
@@ -2899,27 +2871,20 @@
         });
 
         setTimeout(processPendingRequests, WITHDRAW_APPROVAL_MS + 500);
-        setTimeout(() => withdrawModal.classList.add('hidden'), 60000);
+        setTimeout(() => withdrawModal.classList.add('hidden'), 2000);
       });
 
       // ============================================================
-      // AVIATOR GAME LOGIC — AUTO-PLAY + EVERY BET ALWAYS LOSES
-      // CHANGE 2: Auto-play every 10 seconds. Users can bet during
-      // the countdown. History keeps only 20 most recent bets.
+      // AVIATOR GAME LOGIC — EVERY BET ALWAYS LOSES
+      // The plane ALWAYS crashes 5-10 points BELOW the user's target.
       // ============================================================
       const aviatorMultiplierEl = document.getElementById('aviatorMultiplier');
       const aviatorPlane = document.getElementById('aviatorPlane');
       const gameMsg = document.getElementById('gameMessage');
       const startBtn = document.getElementById('startBetBtn');
-      const countdownWrap = document.getElementById('countdownWrap');
 
-      let autoPlayActive = false;
       let gameInterval = null;
       let currentFlightMultiplier = 1.00;
-      let pendingBet = null;
-      let countdownInterval = null;
-      let roundActive = false;
-      let watchdogInterval = null;
 
       function createExplosion() {
         const explosion = document.createElement('div');
@@ -2939,161 +2904,9 @@
         return explosion;
       }
 
-      function updateCountdownBadge(seconds) {
-        if (seconds > 0) {
-          countdownWrap.innerHTML = `<div style="background:linear-gradient(135deg,#f4b400,#d99e00);color:#0d2818;font-weight:800;font-size:16px;padding:8px 20px;border-radius:100px;letter-spacing:1px;box-shadow:0 4px 14px rgba(244,180,0,0.5);display:inline-flex;align-items:center;gap:8px;"><i class="fas fa-hourglass-half"></i> BETTING CLOSES IN ${seconds}s</div>`;
-        } else {
-          countdownWrap.innerHTML = '';
-        }
-      }
-
-      function clearCountdown() {
-        if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
-        countdownWrap.innerHTML = '';
-      }
-
-      function startBettingWindow() {
-        if (!autoPlayActive) return;
-        if (gameInterval) { clearInterval(gameInterval); gameInterval = null; }
-        roundActive = false;
-        pendingBet = null;
-        currentFlightMultiplier = 1.00;
-        aviatorMultiplierEl.textContent = '1.00x';
-        aviatorMultiplierEl.className = 'aviator-multiplier';
-        aviatorPlane.className = 'aviator-plane';
-        aviatorPlane.innerHTML = '<i class="fas fa-plane"></i>';
-        gameMsg.innerHTML = '<i class="fas fa-info-circle"></i> Place your bet! Plane takes off after countdown.';
-        startBtn.disabled = false;
-        startBtn.textContent = 'PLACE BET';
-
-        let seconds = 10;
-        updateCountdownBadge(seconds);
-        clearCountdown();
-        updateCountdownBadge(seconds);
-
-        countdownInterval = setInterval(() => {
-          seconds--;
-          updateCountdownBadge(seconds);
-          if (seconds <= 0) {
-            clearCountdown();
-            clearInterval(countdownInterval);
-            countdownInterval = null;
-            startFlight();
-          }
-        }, 1000);
-      }
-
-      function startFlight() {
-        if (!autoPlayActive) return;
-        if (gameInterval) { clearInterval(gameInterval); gameInterval = null; }
-        roundActive = true;
-        startBtn.disabled = true;
-
-        let crashMultiplier;
-        if (pendingBet) {
-          // LOSING LOGIC: crash 0.05–0.20 BELOW the user's target
-          const shortfall = 0.05 + Math.random() * 0.15;
-          crashMultiplier = Math.round((pendingBet.target - shortfall) * 100) / 100;
-          if (crashMultiplier < 1.01) crashMultiplier = 1.01;
-          if (crashMultiplier >= pendingBet.target) crashMultiplier = Math.round((pendingBet.target - 0.01) * 100) / 100;
-          if (crashMultiplier < 1.01) crashMultiplier = 1.01;
-        } else {
-          // Auto-game: random 1.00–2.10
-          crashMultiplier = Math.round((1 + Math.random() * 1.10) * 100) / 100;
-        }
-
-        const peakMultiplier = crashMultiplier;
-        const totalSteps = Math.max(40, Math.floor(peakMultiplier * 25));
-        let step = 0;
-        const stepDuration = 120;
-
-        aviatorPlane.className = 'aviator-plane flying';
-        gameMsg.innerHTML = `<span class="loading-spinner"></span> Flying...`;
-
-        gameInterval = setInterval(() => {
-          step++;
-          const progress = step / totalSteps;
-          const eased = 1 - Math.pow(1 - progress, 3);
-          currentFlightMultiplier = 1 + (peakMultiplier - 1) * eased;
-
-          aviatorMultiplierEl.textContent = currentFlightMultiplier.toFixed(2) + 'x';
-
-          if (currentFlightMultiplier >= crashMultiplier) {
-            clearInterval(gameInterval);
-            gameInterval = null;
-
-            aviatorMultiplierEl.textContent = crashMultiplier.toFixed(2) + 'x';
-            aviatorMultiplierEl.className = 'aviator-multiplier loss';
-            aviatorPlane.className = 'aviator-plane crashed';
-            gameMsg.textContent = `💥 CRASHED at ${crashMultiplier.toFixed(2)}x`;
-            startBtn.disabled = false;
-
-            const display = document.getElementById('aviatorDisplay');
-            const explosion = createExplosion();
-            display.appendChild(explosion);
-            setTimeout(() => explosion.remove(), 1000);
-
-            if (pendingBet && currentUser) {
-              const { amount, target, phone, betId } = pendingBet;
-              updateHistoryEntry(phone,
-                h => h.id === betId,
-                {
-                  status: 'finished',
-                  description: `Aviator CRASHED at ${crashMultiplier.toFixed(2)}x`,
-                  detail: `Target: ${target.toFixed(2)}x • Amount: $${amount.toFixed(2)} • Lost`,
-                  win: false,
-                  amount: amount
-                }
-              );
-              toastLoss(`Plane crashed at ${crashMultiplier.toFixed(2)}x. You lost $${amount.toFixed(2)}.`, 'Crashed!');
-              renderHistory();
-              pendingBet = null;
-            }
-
-            setTimeout(() => {
-              if (!autoPlayActive) return;
-              startBettingWindow();
-            }, 2000);
-          }
-        }, stepDuration);
-      }
-
-      function startAutoPlay() {
-        if (autoPlayActive && (countdownInterval || gameInterval)) return;
-        autoPlayActive = true;
-        roundActive = false;
-        pendingBet = null;
-        startBettingWindow();
-        if (watchdogInterval) clearInterval(watchdogInterval);
-        watchdogInterval = setInterval(() => {
-          if (!autoPlayActive) return;
-          if (!roundActive && !countdownInterval && !gameInterval) {
-            console.log('[Watchdog] Restarting auto-play loop');
-            startBettingWindow();
-          }
-        }, 3000);
-      }
-
-      function stopAutoPlay() {
-        autoPlayActive = false;
-        if (gameInterval) { clearInterval(gameInterval); gameInterval = null; }
-        if (watchdogInterval) { clearInterval(watchdogInterval); watchdogInterval = null; }
-        clearCountdown();
-        roundActive = false;
-        pendingBet = null;
-        startBtn.disabled = false;
-        aviatorMultiplierEl.textContent = '1.00x';
-        aviatorMultiplierEl.className = 'aviator-multiplier';
-        aviatorPlane.className = 'aviator-plane';
-        aviatorPlane.innerHTML = '<i class="fas fa-plane"></i>';
-        gameMsg.innerHTML = 'Waiting for betting window…';
-        countdownWrap.innerHTML = '';
-      }
-
       document.getElementById('startBetBtn').addEventListener('click', () => {
-        if (!currentUser) return toastWarning('Please log in to place a bet.', 'Not logged in');
-        if (pendingBet) return toastWarning('You already have a bet for this round.', 'Bet already placed');
-        if (roundActive) return toastWarning('Wait for the next betting window.', 'Round in progress');
+        if (!currentUser) return;
+        if (gameInterval) return; // already flying
 
         const betAmount = parseFloat(document.getElementById('betAmount').value);
         const targetMultiplier = parseFloat(document.getElementById('betMultiplier').value);
@@ -3103,6 +2916,7 @@
           return toastError('Multiplier must be between 1.01 and 1000.', 'Invalid multiplier');
         if (currentUser.balance < betAmount) return toastError('Insufficient balance for this bet.', 'Insufficient funds');
 
+        // Deduct bet amount immediately
         const users = getUsers();
         const idx = users.findIndex(u => u.phone === currentUser.phone);
         if (idx === -1) return;
@@ -3112,6 +2926,30 @@
         currentUser = users[idx];
         updateBalanceUI();
 
+        // ============================================================
+        // LOSING LOGIC: crash multiplier is 0.05-0.10 BELOW the target.
+        // Ensure it's still above 1.00 so the animation looks natural.
+        // ============================================================
+        const shortfall = 0.05 + Math.random() * 0.05; // 0.05 to 0.10
+        let crashMultiplier = Math.round((targetMultiplier - shortfall) * 100) / 100;
+
+        // Safety: never go below 1.01
+        if (crashMultiplier < 1.01) {
+          crashMultiplier = 1.01;
+        }
+
+        // Animation peaks slightly ABOVE the crash point to make the crash feel sudden.
+        const peakMultiplier = Math.round((crashMultiplier + 0.02) * 100) / 100;
+
+        // Reset display
+        currentFlightMultiplier = 1.00;
+        aviatorMultiplierEl.textContent = '1.00x';
+        aviatorMultiplierEl.className = 'aviator-multiplier';
+        aviatorPlane.className = 'aviator-plane flying';
+        aviatorPlane.innerHTML = '<i class="fas fa-plane"></i>';
+        gameMsg.innerHTML = `<span class="loading-spinner"></span> Flying...`;
+        startBtn.disabled = true;
+
         const betId = 'bet_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
         const createdAt = new Date().toLocaleString();
 
@@ -3120,22 +2958,82 @@
           type: 'bet',
           status: 'spinning',
           description: `Aviator bet — Target ${targetMultiplier.toFixed(2)}x`,
-          detail: `Amount: $${betAmount.toFixed(2)} • Waiting for flight...`,
+          detail: `Amount: $${betAmount.toFixed(2)} • Flying...`,
           amount: betAmount,
           win: false,
           time: createdAt
         });
         renderHistory();
 
-        pendingBet = { amount: betAmount, target: targetMultiplier, phone: currentUser.phone, betId: betId };
-        toastSuccess(`Bet placed: $${betAmount.toFixed(2)} at ${targetMultiplier.toFixed(2)}x`, 'Bet accepted');
-        startBtn.disabled = true;
-        startBtn.textContent = 'BET PLACED';
-        gameMsg.innerHTML = `<i class="fas fa-check-circle" style="color:#34a853;"></i> Bet placed! Target: ${targetMultiplier.toFixed(2)}x — waiting for flight...`;
+        // Animation parameters - SLOW
+        const totalSteps = Math.max(40, Math.floor(peakMultiplier * 25));
+        let step = 0;
+        const stepDuration = 120;
+
+        gameInterval = setInterval(() => {
+          step++;
+          const progress = step / totalSteps;
+          const eased = 1 - Math.pow(1 - progress, 3);
+          currentFlightMultiplier = 1 + (peakMultiplier - 1) * eased;
+
+          aviatorMultiplierEl.textContent = currentFlightMultiplier.toFixed(2) + 'x';
+
+          if (step % 5 === 0) {
+            updateHistoryEntry(currentUser.phone,
+              h => h.id === betId,
+              { detail: `Amount: $${betAmount.toFixed(2)} • Flying at ${currentFlightMultiplier.toFixed(2)}x` }
+            );
+            if (!historyPanel.classList.contains('hidden')) renderHistory();
+          }
+
+          // CRASH when we reach the crash multiplier
+          if (currentFlightMultiplier >= crashMultiplier) {
+            clearInterval(gameInterval);
+            gameInterval = null;
+
+            // CRASH!
+            aviatorMultiplierEl.textContent = crashMultiplier.toFixed(2) + 'x';
+            aviatorMultiplierEl.className = 'aviator-multiplier loss';
+            aviatorPlane.className = 'aviator-plane crashed';
+            gameMsg.textContent = `💥 CRASHED at ${crashMultiplier.toFixed(2)}x — Lost $${betAmount.toFixed(2)}`;
+            startBtn.disabled = false;
+
+            const display = document.getElementById('aviatorDisplay');
+            const explosion = createExplosion();
+            display.appendChild(explosion);
+            setTimeout(() => explosion.remove(), 1000);
+
+            updateHistoryEntry(currentUser.phone,
+              h => h.id === betId,
+              {
+                status: 'finished',
+                description: `Aviator CRASHED at ${crashMultiplier.toFixed(2)}x`,
+                detail: `Amount: $${betAmount.toFixed(2)} • Lost`,
+                win: false,
+                amount: betAmount
+              }
+            );
+
+            toastLoss(`The plane crashed at ${crashMultiplier.toFixed(2)}x. You lost $${betAmount.toFixed(2)}.`, 'Crashed!');
+            renderHistory();
+
+            setTimeout(() => {
+              if (!gameInterval) {
+                aviatorMultiplierEl.textContent = '1.00x';
+                aviatorMultiplierEl.className = 'aviator-multiplier';
+                aviatorPlane.className = 'aviator-plane';
+                aviatorPlane.innerHTML = '<i class="fas fa-plane"></i>';
+                gameMsg.textContent = 'Set your multiplier and place your bet';
+              }
+            }, 3000);
+
+            return;
+          }
+        }, stepDuration);
       });
 
       document.getElementById('betMultiplier').addEventListener('input', () => {
-        if (!gameInterval && !pendingBet) {
+        if (!gameInterval) {
           aviatorMultiplierEl.textContent = '1.00x';
           aviatorMultiplierEl.className = 'aviator-multiplier';
           aviatorPlane.className = 'aviator-plane';
@@ -3144,7 +3042,6 @@
       });
 
       window.showDashboard = showDashboard;
-      window.stopAutoPlay = stopAutoPlay;
 
       window.addEventListener('storage', (e) => {
         if (e.key === STORAGE_PREFIX + 'currentUser' || e.key === STORAGE_PREFIX + 'users' || e.key === STORAGE_PREFIX + 'pending' || e.key.startsWith(STORAGE_PREFIX + 'history_')) {
@@ -3152,20 +3049,15 @@
             authSection.classList.remove('hidden');
             dashboardSection.classList.add('hidden');
             logoutBtn.classList.add('hidden');
-            stopAutoPlay();
           } else {
             currentUser = getCurrentUser();
             updateBalanceUI();
             renderHistory();
             logoutBtn.classList.remove('hidden');
             processPendingRequests();
-            if (!autoPlayActive) startAutoPlay();
           }
         }
       });
-
-      // Boot the auto-play as soon as the page is fully ready
-      setTimeout(() => { if (!autoPlayActive) startAutoPlay(); }, 500);
     })();
   </script>
 </body>
