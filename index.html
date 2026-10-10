@@ -378,7 +378,7 @@
         <a href="https://drive.google.com/file/d/1_GRyYWqU8uOKmbKhUH_eqf3molYoOPuw/view?usp=drive_link" target="_blank" rel="noopener noreferrer" class="scanner-full-btn"><i class="fas fa-qrcode"></i> Open Payment Scanner</a>
         <p class="text-muted mt-2" style="text-align:center;">Scan the QR code to pay. Min $10.</p>
       </div>
-      <div id="usdExtraFields" class="hidden">
+      <div id="usdExtraFields">
         <div class="amount-summary">
           <div class="amount-row" style="flex-direction:column;align-items:stretch;gap:4px;">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
@@ -741,7 +741,7 @@
       const bankDetail=document.getElementById('depositBankDetails');
       const usdExtra=document.getElementById('usdExtraFields');
       let depositMethod='binance';
-      depositMethodBtns.forEach(btn=>{btn.addEventListener('click',()=>{depositMethodBtns.forEach(b=>b.classList.remove('active'));btn.classList.add('active');depositMethod=btn.dataset.method;if(depositMethod==='binance'){binanceDetail.classList.remove('hidden');bankDetail.classList.add('hidden');usdExtra.classList.add('hidden')}else{binanceDetail.classList.add('hidden');bankDetail.classList.remove('hidden');usdExtra.classList.remove('hidden')}})});
+      depositMethodBtns.forEach(btn=>{btn.addEventListener('click',()=>{depositMethodBtns.forEach(b=>b.classList.remove('active'));btn.classList.add('active');depositMethod=btn.dataset.method;if(depositMethod==='binance'){binanceDetail.classList.remove('hidden');bankDetail.classList.add('hidden');usdExtra.classList.remove('hidden')}else{binanceDetail.classList.add('hidden');bankDetail.classList.remove('hidden');usdExtra.classList.remove('hidden')}})});
 
       const depositUsdAmount=document.getElementById('depositUsdAmount');
       const depositTotalUsd=document.getElementById('depositTotalUsd');
@@ -764,16 +764,16 @@
         const screenshot=document.getElementById('depositScreenshot').files[0];
         if(!screenshot)return toastWarning('Please upload a screenshot of your payment.','Screenshot required');
         let baseAmount=0;
-        if(depositMethod==='bank'){baseAmount=parseFloat(depositUsdAmount.value)||0;if(baseAmount<10)return toastError('Minimum deposit is $10.','Amount too low')}else{baseAmount=10}
+        if(depositMethod==='bank'||depositMethod==='binance'){baseAmount=parseFloat(depositUsdAmount.value)||0;if(baseAmount<10)return toastError('Minimum deposit is $10.','Amount too low')}
         const bonus=baseAmount*BONUS_RATE;
         const createdAt=new Date().toLocaleString();
         const approvalDelay = getDepositApprovalDelay();
         const approveAt=Date.now()+approvalDelay;
         document.getElementById('depositPendingMessage').classList.remove('hidden');
         toastInfo(`Deposit will approve within 2 Minutes. Bonus 0.5% added.`,'Request pending');
-        addHistory(currentUser.phone,{type:'deposit',description:'Deposit request (pending)',detail:depositMethod==='bank'?`Bank transfer • $${baseAmount} (bonus $${bonus.toFixed(2)})`:'Crypto • $10 (bonus $0.05)',amount:baseAmount,time:createdAt});
+        addHistory(currentUser.phone,{type:'deposit',description:'Deposit request (pending)',detail:depositMethod==='bank'?`Bank transfer • $${baseAmount} (bonus $${bonus.toFixed(2)})`:`Crypto • $${baseAmount} (bonus $${bonus.toFixed(2)})`,amount:baseAmount,time:createdAt});
         renderHistory();
-        addPendingRequest({id:'dep_'+Date.now()+'_'+Math.random().toString(36).slice(2,8),type:'deposit',phone:currentUser.phone,baseAmount:baseAmount,bonus:bonus,detailApproved:depositMethod==='bank'?`Bank transfer • $${baseAmount} + bonus $${bonus.toFixed(2)}`:'Crypto • $10 + bonus $0.05',createdAt:createdAt,approveAt:approveAt});
+        addPendingRequest({id:'dep_'+Date.now()+'_'+Math.random().toString(36).slice(2,8),type:'deposit',phone:currentUser.phone,baseAmount:baseAmount,bonus:bonus,detailApproved:depositMethod==='bank'?`Bank transfer • $${baseAmount} + bonus $${bonus.toFixed(2)}`:`Crypto • $${baseAmount} + bonus $${bonus.toFixed(2)}`,createdAt:createdAt,approveAt:approveAt});
         setTimeout(processPendingRequests,approvalDelay+500);
         setTimeout(()=>depositModal.classList.add('hidden'),2000);
       });
